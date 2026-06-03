@@ -2,6 +2,7 @@ const express = require('express')
 const { createClient } = require('@supabase/supabase-js')
 const app = express()
 app.use(express.json())
+app.use(function(req,res,next){res.header('Access-Control-Allow-Origin','*');res.header('Access-Control-Allow-Methods','GET,POST,OPTIONS');res.header('Access-Control-Allow-Headers','Content-Type,Authorization');if(req.method==='OPTIONS')return res.sendStatus(200);next();})
 
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
