@@ -33,7 +33,8 @@ app.post('/webhook', async (req, res) => {
   try {
     // ── OUTBOUND: send SMS from portal ──
     if (body?.action === 'send') {
-      const { to, message } = body
+      let { to, message } = body
+      if (to && !to.startsWith('+')) to = '+1' + to.replace(/[^\d]/g, '')
       console.log('Sending SMS to:', to)
       const response = await fetch('https://api.openphone.com/v1/messages', {
         method: 'POST',
