@@ -1,7 +1,7 @@
 const express = require('express')
 const { createClient } = require('@supabase/supabase-js')
-const ws = require('ws')
 const webpush = require('web-push')
+const { google } = require('googleapis')
 const app = express()
 app.use(express.json())
 app.use(function(req,res,next){
@@ -17,17 +17,62 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 const OPENPHONE_API_KEY = process.env.OPENPHONE_API_KEY
 const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY
+const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || 'chrisna.hang@gmail.com'
+const GOOGLE_SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT
 
 console.log('SUPABASE_URL:', SUPABASE_URL ? 'set' : 'MISSING')
 console.log('SUPABASE_KEY:', SUPABASE_KEY ? 'set' : 'MISSING')
 console.log('OPENPHONE_API_KEY:', OPENPHONE_API_KEY ? 'set' : 'MISSING')
 console.log('VAPID keys:', VAPID_PUBLIC ? 'set' : 'MISSING')
+console.log('GOOGLE_SERVICE_ACCOUNT:', GOOGLE_SERVICE_ACCOUNT ? 'set' : 'MISSING')
 
 if(VAPID_PUBLIC && VAPID_PRIVATE) {
   webpush.setVapidDetails('mailto:info@uneditedcontentstudio.com', VAPID_PUBLIC, VAPID_PRIVATE)
 }
 
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { transport: ws } })
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { transport: require('ws') } })
+
+// Google Calendar helper
+async function createCalendarEvent({ summary, description, date, startTime, endTime, clientEmail }) {
+  if (!GOOGLE_SERVICE_ACCOUNT) { console.log('No Google service account configured'); return null }
+  try {
+    const creds = JSON.parse(GOOGLE_SERVICE_ACCOUNT)
+    const auth = new google.auth.GoogleAuth({
+      credentials: creds,
+      scopes: ['https://www.googleapis.com/auth/calendar']
+    })
+    const calendar = google.calendar({ version: 'v3', auth })
+    
+    // Build event times
+    const start = startTime 
+      ? { dateTime: `${date}T${startTime}:00`, timeZone: 'America/Boise' }
+      : { date }
+    const end = endTime
+      ? { dateTime: `${date}T${endTime}:00`, timeZone: 'America/Boise' }
+      : startTime
+        ? { dateTime: `${date}T${startTime.split(':')[0]}:${startTime.split(':')[1] || '00'}:00`, timeZone: 'America/Boise' }
+        : { date }
+
+    const attendees = clientEmail ? [{ email: clientEmail }] : []
+
+    const event = await calendar.events.insert({
+      calendarId: GOOGLE_CALENDAR_ID,
+      sendUpdates: 'all',
+      requestBody: {
+        summary,
+        description,
+        start,
+        end,
+        attendees
+      }
+    })
+    console.log('Calendar event created:', event.data.id)
+    return event.data
+  } catch(e) {
+    console.error('Calendar event error:', e.message)
+    return null
+  }
+}
 
 async function sendPushToClient(clientId, title, body, type) {
   try {
@@ -38,15 +83,13 @@ async function sendPushToClient(clientId, title, body, type) {
         await webpush.sendNotification(sub.subscription, JSON.stringify({ title, body, type: type||'home', icon: '/icon-192.png', badge: '/icon-192.png' }))
         console.log('Push sent to', clientId)
       } catch(e) {
-        console.log('Push failed for sub:', e.statusCode, e.message)
+        console.log('Push failed:', e.statusCode, e.message)
         if(e.statusCode === 410 || e.statusCode === 404) {
           await sb.from('push_subscriptions').delete().eq('id', sub.id)
         }
       }
     }
-  } catch(e) {
-    console.error('sendPushToClient error:', e.message)
-  }
+  } catch(e) { console.error('sendPushToClient error:', e.message) }
 }
 
 async function testConnection() {
@@ -57,7 +100,7 @@ async function testConnection() {
   } catch (e) { console.error('Supabase exception:', e.message) }
 }
 
-app.get('/', (req, res) => res.json({ ok: true, service: 'UCS Webhook', vapid_public: VAPID_PUBLIC }))
+app.get('/', (req, res) => res.json({ ok: true, service: 'UCS Webhook' }))
 app.get('/webhook', (req, res) => res.json({ ok: true }))
 
 app.post('/webhook', async (req, res) => {
@@ -69,16 +112,23 @@ app.post('/webhook', async (req, res) => {
     if (body?.action === 'subscribe') {
       const { client_id, subscription } = body
       if (!client_id || !subscription) return res.json({ ok: false, error: 'missing fields' })
-      await sb.from('push_subscriptions').upsert({ client_id, subscription, updated_at: new Date().toISOString() }, { onConflict: 'client_id,endpoint' })
-      console.log('Push subscription saved for client:', client_id)
+      await sb.from('push_subscriptions').upsert({ client_id, subscription, endpoint: subscription.endpoint, updated_at: new Date().toISOString() }, { onConflict: 'client_id,endpoint' })
+      console.log('Push subscription saved for:', client_id)
       return res.json({ ok: true })
     }
 
-    // ── SEND PUSH NOTIFICATION ──
+    // ── SEND PUSH ──
     if (body?.action === 'push') {
       const { client_id, title, body: msg, type } = body
       await sendPushToClient(client_id, title, msg, type)
       return res.json({ ok: true })
+    }
+
+    // ── CREATE CALENDAR EVENT ──
+    if (body?.action === 'calendar') {
+      const { summary, description, date, startTime, endTime, clientEmail } = body
+      const event = await createCalendarEvent({ summary, description, date, startTime, endTime, clientEmail })
+      return res.json({ ok: !!event, event })
     }
 
     // ── OUTBOUND SMS ──
@@ -110,7 +160,7 @@ app.post('/webhook', async (req, res) => {
       console.log('Matched:', client.first_name)
       await sb.from('messages').insert({ client_id: client.id, sender: 'client', content: text, read: false, created_at: new Date().toISOString() })
       await sb.from('admin_notifications').insert({ type: 'message', title: client.first_name + ' sent a message', body: text.slice(0, 100), client_id: client.id })
-      await sendPushToClient(client.id, '💬 New message from ' + client.first_name, text.slice(0, 100))
+      await sendPushToClient(client.id, '💬 New message from ' + client.first_name, text.slice(0, 100), 'message')
       return res.json({ ok: true })
     }
 
