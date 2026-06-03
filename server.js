@@ -29,13 +29,13 @@ if(VAPID_PUBLIC && VAPID_PRIVATE) {
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { transport: ws } })
 
-async function sendPushToClient(clientId, title, body) {
+async function sendPushToClient(clientId, title, body, type) {
   try {
     const { data: subs } = await sb.from('push_subscriptions').select('*').eq('client_id', clientId)
     if (!subs || subs.length === 0) { console.log('No push subscriptions for client:', clientId); return }
     for (const sub of subs) {
       try {
-        await webpush.sendNotification(sub.subscription, JSON.stringify({ title, body, icon: '/icon-192.png', badge: '/icon-192.png' }))
+        await webpush.sendNotification(sub.subscription, JSON.stringify({ title, body, type: type||'home', icon: '/icon-192.png', badge: '/icon-192.png' }))
         console.log('Push sent to', clientId)
       } catch(e) {
         console.log('Push failed for sub:', e.statusCode, e.message)
@@ -76,8 +76,8 @@ app.post('/webhook', async (req, res) => {
 
     // ── SEND PUSH NOTIFICATION ──
     if (body?.action === 'push') {
-      const { client_id, title, body: msg } = body
-      await sendPushToClient(client_id, title, msg)
+      const { client_id, title, body: msg, type } = body
+      await sendPushToClient(client_id, title, msg, type)
       return res.json({ ok: true })
     }
 
