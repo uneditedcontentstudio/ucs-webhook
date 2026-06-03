@@ -1,5 +1,6 @@
 const express = require('express')
 const { createClient } = require('@supabase/supabase-js')
+const ws = require('ws')
 const webpush = require('web-push')
 const app = express()
 app.use(express.json())
@@ -26,7 +27,7 @@ if(VAPID_PUBLIC && VAPID_PRIVATE) {
   webpush.setVapidDetails('mailto:info@uneditedcontentstudio.com', VAPID_PUBLIC, VAPID_PRIVATE)
 }
 
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { transport: ws } })
 
 async function sendPushToClient(clientId, title, body) {
   try {
