@@ -1,60 +1,25 @@
 const express = require('express')
+const { createClient } = require('@supabase/supabase-js')
 const app = express()
 app.use(express.json())
 
-const SUPABASE_URL = 'https://wvnmyvykjdwjctmiltog.supabase.co'
+const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 const OPENPHONE_API_KEY = process.env.OPENPHONE_API_KEY
 
-async function sbGet(path, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(SUPABASE_URL + '/rest/v1' + path, {
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_KEY
-        }
-      })
-      return res.json()
-    } catch (e) {
-      console.log(`sbGet attempt ${i+1} failed:`, e.message)
-      if (i < retries - 1) await new Promise(r => setTimeout(r, 1000))
-      else throw e
-    }
-  }
-}
+console.log('SUPABASE_URL:', SUPABASE_URL ? 'set' : 'MISSING')
+console.log('SUPABASE_KEY:', SUPABASE_KEY ? 'set (' + SUPABASE_KEY.length + ' chars)' : 'MISSING')
+console.log('OPENPHONE_API_KEY:', OPENPHONE_API_KEY ? 'set' : 'MISSING')
 
-async function sbPost(path, body, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fetch(SUPABASE_URL + '/rest/v1' + path, {
-        method: 'POST',
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_KEY,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(body)
-      })
-    } catch (e) {
-      console.log(`sbPost attempt ${i+1} failed:`, e.message)
-      if (i < retries - 1) await new Promise(r => setTimeout(r, 1000))
-      else throw e
-    }
-  }
-}
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-// Test Supabase connection on startup
 async function testConnection() {
   try {
-    console.log('Testing Supabase connection...')
-    const res = await fetch(SUPABASE_URL + '/rest/v1/clients?select=id&limit=1', {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-    })
-    console.log('Supabase connection test:', res.status, res.ok ? 'OK' : 'FAILED')
+    const { data, error } = await sb.from('clients').select('id').limit(1)
+    if (error) console.log('Supabase test error:', error.message)
+    else console.log('Supabase connection test: OK, clients found:', data?.length)
   } catch (e) {
-    console.error('Supabase connection test FAILED:', e.message)
+    console.error('Supabase test exception:', e.message)
   }
 }
 
@@ -66,6 +31,7 @@ app.post('/webhook', async (req, res) => {
   console.log('Received type:', body?.type || body?.action)
 
   try {
+    // ── OUTBOUND: send SMS from portal ──
     if (body?.action === 'send') {
       const { to, message } = body
       console.log('Sending SMS to:', to)
@@ -75,22 +41,25 @@ app.post('/webhook', async (req, res) => {
         body: JSON.stringify({ content: message, from: 'PN7bGOiGL0', to: [to] })
       })
       const data = await response.json()
-      console.log('OpenPhone response:', response.status, JSON.stringify(data))
+      console.log('OpenPhone response:', response.status)
       return res.json({ ok: response.ok, data })
     }
 
+    // ── INBOUND: message from OpenPhone webhook ──
     if (body?.type === 'message.received') {
       const msg = body?.data?.object
       const from = msg?.from
       const text = msg?.body || ''
       if (!from || !text) return res.json({ ok: true, skipped: 'no from/text' })
+
       const cleanPhone = from.replace(/[^\d]/g, '').slice(-10)
-      console.log('Inbound from:', cleanPhone, 'text:', text)
+      console.log('Inbound from:', cleanPhone)
 
-      const clients = await sbGet('/clients?select=id,first_name,phone&limit=200')
-      console.log('Clients fetched:', Array.isArray(clients) ? clients.length : JSON.stringify(clients))
+      const { data: clients, error: clientErr } = await sb.from('clients').select('id,first_name,phone').limit(200)
+      if (clientErr) { console.log('Client fetch error:', clientErr.message); return res.json({ ok: true, skipped: 'db error' }) }
+      console.log('Clients fetched:', clients?.length)
 
-      const client = (Array.isArray(clients) ? clients : []).find(c => {
+      const client = (clients || []).find(c => {
         const cp = (c.phone || '').replace(/[^\d]/g, '').slice(-10)
         return cp && cp === cleanPhone
       })
@@ -101,8 +70,10 @@ app.post('/webhook', async (req, res) => {
       }
 
       console.log('Matched:', client.first_name)
-      await sbPost('/messages', { client_id: client.id, sender: 'client', content: text, read: false, created_at: new Date().toISOString() })
-      await sbPost('/admin_notifications', { type: 'message', title: client.first_name + ' sent a message', body: text.slice(0, 100), client_id: client.id })
+
+      await sb.from('messages').insert({ client_id: client.id, sender: 'client', content: text, read: false, created_at: new Date().toISOString() })
+      await sb.from('admin_notifications').insert({ type: 'message', title: client.first_name + ' sent a message', body: text.slice(0, 100), client_id: client.id })
+
       console.log('Saved message for', client.first_name)
       return res.json({ ok: true })
     }
