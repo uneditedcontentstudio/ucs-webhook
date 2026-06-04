@@ -143,7 +143,23 @@ app.post('/webhook', async (req, res) => {
     if (body?.action === 'calendar') {
       const { summary, description, date, startTime, endTime, clientEmail } = body
       const event = await createCalendarEvent({ summary, description, date, startTime, endTime, clientEmail })
-      return res.json({ ok: !!event, event })
+      return res.json({ ok: !!event, eventId: event?.id, event })
+    }
+
+    if (body?.action === 'calendar_delete') {
+      const { eventId } = body
+      if (!eventId || !GOOGLE_SERVICE_ACCOUNT) return res.json({ ok: false })
+      try {
+        const creds = JSON.parse(GOOGLE_SERVICE_ACCOUNT)
+        const auth = new google.auth.GoogleAuth({ credentials: creds, scopes: ['https://www.googleapis.com/auth/calendar'] })
+        const calendar = google.calendar({ version: 'v3', auth })
+        await calendar.events.delete({ calendarId: GOOGLE_CALENDAR_ID, eventId })
+        console.log('Calendar event deleted:', eventId)
+        return res.json({ ok: true })
+      } catch(e) {
+        console.error('Calendar delete error:', e.message)
+        return res.json({ ok: false, error: e.message })
+      }
     }
 
     // ── OUTBOUND SMS ──
