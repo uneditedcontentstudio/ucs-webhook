@@ -53,17 +53,14 @@ async function createCalendarEvent({ summary, description, date, startTime, endT
         ? { dateTime: `${date}T${startTime.split(':')[0]}:${startTime.split(':')[1] || '00'}:00`, timeZone: 'America/Boise' }
         : { date }
 
-    const attendees = clientEmail ? [{ email: clientEmail }] : []
-
     const event = await calendar.events.insert({
       calendarId: GOOGLE_CALENDAR_ID,
-      sendUpdates: 'all',
+      sendUpdates: 'none',
       requestBody: {
         summary,
         description,
         start,
-        end,
-        attendees
+        end
       }
     })
     console.log('Calendar event created:', event.data.id)
