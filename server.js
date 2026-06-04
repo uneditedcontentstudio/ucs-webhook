@@ -180,7 +180,7 @@ app.post('/webhook', async (req, res) => {
         body: JSON.stringify(payload)
       })
       const data = await response.json()
-      console.log('OpenPhone response:', response.status, data?.id || '')
+      console.log('OpenPhone response:', response.status, JSON.stringify(data))
       return res.json({ ok: response.ok, data })
     }
 
