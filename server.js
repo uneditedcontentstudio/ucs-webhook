@@ -2,6 +2,7 @@ const express = require('express')
 const { createClient } = require('@supabase/supabase-js')
 const webpush = require('web-push')
 const { google } = require('googleapis')
+const nodemailer = require('nodemailer')
 const app = express()
 app.use(express.json())
 app.use(function(req,res,next){
@@ -20,7 +21,10 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY
 const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || 'chrisna.hang@gmail.com'
 const GOOGLE_SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT
 
+const GMAIL_USER = process.env.GMAIL_USER
+const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD
 console.log('SUPABASE_URL:', SUPABASE_URL ? 'set' : 'MISSING')
+console.log('GMAIL:', GMAIL_USER ? 'set' : 'MISSING')
 console.log('SUPABASE_KEY:', SUPABASE_KEY ? 'set' : 'MISSING')
 console.log('OPENPHONE_API_KEY:', OPENPHONE_API_KEY ? 'set' : 'MISSING')
 console.log('VAPID keys:', VAPID_PUBLIC ? 'set' : 'MISSING')
@@ -119,6 +123,20 @@ app.post('/webhook', async (req, res) => {
       const { client_id, title, body: msg, type } = body
       await sendPushToClient(client_id, title, msg, type)
       return res.json({ ok: true })
+    }
+
+    if (body?.action === 'email') {
+      const { to, subject, html } = body
+      if (!GMAIL_USER || !GMAIL_PASS) return res.json({ ok: false, error: 'Email not configured' })
+      try {
+        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_PASS } })
+        await transporter.sendMail({ from: 'Unedited Content Studio <' + GMAIL_USER + '>', to, subject, html })
+        console.log('Email sent to', to)
+        return res.json({ ok: true })
+      } catch(e) {
+        console.error('Email error:', e.message)
+        return res.json({ ok: false, error: e.message })
+      }
     }
 
     // ── CREATE CALENDAR EVENT ──
