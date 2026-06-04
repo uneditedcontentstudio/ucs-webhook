@@ -129,7 +129,7 @@ app.post('/webhook', async (req, res) => {
       const { to, subject, html } = body
       if (!GMAIL_USER || !GMAIL_PASS) return res.json({ ok: false, error: 'Email not configured' })
       try {
-        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_PASS } })
+        const transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: GMAIL_USER, pass: GMAIL_PASS } })
         await transporter.sendMail({ from: 'Unedited Content Studio <' + GMAIL_USER + '>', to, subject, html })
         console.log('Email sent to', to)
         return res.json({ ok: true })
