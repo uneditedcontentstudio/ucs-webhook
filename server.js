@@ -172,8 +172,9 @@ app.post('/webhook', async (req, res) => {
       if (to && !to.startsWith('+')) to = '+1' + to.replace(/[^\d]/g, '')
       console.log('Sending SMS/MMS to:', to, mediaUrl ? '(with image)' : '')
       const payload = { from: 'PN7bGOiGL0', to: [to] }
-      payload.content = (message && message.trim()) ? message : ' '
+      payload.content = (message && message.trim()) ? message.trim() : '📷'
       if (mediaUrl) payload.mediaUrls = [mediaUrl]
+      console.log('Payload:', JSON.stringify(payload))
       const response = await fetch('https://api.openphone.com/v1/messages', {
         method: 'POST',
         headers: { 'Authorization': OPENPHONE_API_KEY, 'Content-Type': 'application/json' },
