@@ -172,9 +172,11 @@ app.post('/webhook', async (req, res) => {
       if (to && !to.startsWith('+')) to = '+1' + to.replace(/[^\d]/g, '')
       console.log('Sending SMS/MMS to:', to, mediaUrl ? '(with image)' : '')
       const payload = { from: 'PN7bGOiGL0', to: [to] }
-      payload.content = (message && message.trim()) ? message.trim() : '📷'
-      if (mediaUrl) payload.mediaUrls = [mediaUrl]
-      console.log('Payload:', JSON.stringify(payload))
+      payload.content = (message && message.trim()) ? message.trim() : null
+      // OpenPhone API doesn't support MMS - send image as a link instead
+      if (mediaUrl && !payload.content) payload.content = '📷 Photo: ' + mediaUrl
+      else if (mediaUrl) payload.content = payload.content + '\n📷 ' + mediaUrl
+      if (!payload.content) { console.log('No content to send'); return res.json({ ok: false, error: 'no content' }) }
       const response = await fetch('https://api.openphone.com/v1/messages', {
         method: 'POST',
         headers: { 'Authorization': OPENPHONE_API_KEY, 'Content-Type': 'application/json' },
@@ -185,21 +187,29 @@ app.post('/webhook', async (req, res) => {
       return res.json({ ok: response.ok, data })
     }
 
-    // ── INBOUND SMS ──
+    // ── INBOUND SMS / MMS ──
     if (body?.type === 'message.received') {
       const msg = body?.data?.object
       const from = msg?.from
       const text = msg?.body || ''
-      if (!from || !text) return res.json({ ok: true, skipped: 'no from/text' })
+      // Get media attachments if any (MMS)
+      const media = msg?.media || []
+      const firstImageUrl = media.length > 0 ? media[0]?.url : null
+      // Skip if no text AND no media
+      if (!from || (!text && !firstImageUrl)) return res.json({ ok: true, skipped: 'no from/text/media' })
       const cleanPhone = from.replace(/[^\d]/g, '').slice(-10)
-      console.log('Inbound from:', cleanPhone)
+      console.log('Inbound from:', cleanPhone, firstImageUrl ? '(with image)' : '')
       const { data: clients } = await sb.from('clients').select('id,first_name,phone').limit(200)
       const client = (clients || []).find(c => (c.phone||'').replace(/[^\d]/g,'').slice(-10) === cleanPhone)
       if (!client) { console.log('No match for:', cleanPhone); return res.json({ ok: true, skipped: 'no match' }) }
       console.log('Matched:', client.first_name)
-      await sb.from('messages').insert({ client_id: client.id, sender: 'client', content: text, read: false, created_at: new Date().toISOString() })
-      await sb.from('admin_notifications').insert({ type: 'message', title: client.first_name + ' sent a message', body: text.slice(0, 100), client_id: client.id })
-      await sendPushToClient(client.id, '💬 New message from ' + client.first_name, text.slice(0, 100), 'message')
+      // Save message with image_url if present
+      const msgRow = { client_id: client.id, sender: 'client', content: text, read: false, created_at: new Date().toISOString() }
+      if (firstImageUrl) msgRow.image_url = firstImageUrl
+      await sb.from('messages').insert(msgRow)
+      const notifBody = firstImageUrl ? (text || '📷 Photo') : text.slice(0, 100)
+      await sb.from('admin_notifications').insert({ type: 'message', title: client.first_name + ' sent a message', body: notifBody, client_id: client.id })
+      await sendPushToClient(client.id, '💬 New message from ' + client.first_name, notifBody, 'message')
       return res.json({ ok: true })
     }
 
