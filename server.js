@@ -2,7 +2,7 @@ const express = require('express')
 const { createClient } = require('@supabase/supabase-js')
 const webpush = require('web-push')
 const { google } = require('googleapis')
-const nodemailer = require('nodemailer')
+
 const app = express()
 app.use(express.json())
 app.use(function(req,res,next){
@@ -21,10 +21,9 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY
 const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || 'chrisna.hang@gmail.com'
 const GOOGLE_SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT
 
-const GMAIL_USER = process.env.GMAIL_USER
-const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD
+const RESEND_KEY = process.env.RESEND_API_KEY
 console.log('SUPABASE_URL:', SUPABASE_URL ? 'set' : 'MISSING')
-console.log('GMAIL:', GMAIL_USER ? 'set' : 'MISSING')
+console.log('RESEND:', RESEND_KEY ? 'set' : 'MISSING')
 console.log('SUPABASE_KEY:', SUPABASE_KEY ? 'set' : 'MISSING')
 console.log('OPENPHONE_API_KEY:', OPENPHONE_API_KEY ? 'set' : 'MISSING')
 console.log('VAPID keys:', VAPID_PUBLIC ? 'set' : 'MISSING')
@@ -127,10 +126,15 @@ app.post('/webhook', async (req, res) => {
 
     if (body?.action === 'email') {
       const { to, subject, html } = body
-      if (!GMAIL_USER || !GMAIL_PASS) return res.json({ ok: false, error: 'Email not configured' })
+      if (!RESEND_KEY) return res.json({ ok: false, error: 'Resend not configured' })
       try {
-        const transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: GMAIL_USER, pass: GMAIL_PASS } })
-        await transporter.sendMail({ from: 'Unedited Content Studio <' + GMAIL_USER + '>', to, subject, html })
+        const res2 = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + RESEND_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: 'Unedited Content Studio <onboarding@resend.dev>', to, subject, html })
+        })
+        const data = await res2.json()
+        if (!res2.ok) { console.error('Resend error:', data); return res.json({ ok: false, error: data }) }
         console.log('Email sent to', to)
         return res.json({ ok: true })
       } catch(e) {
@@ -203,4 +207,91 @@ app.post('/webhook', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => { console.log('UCS webhook running on port', PORT); testConnection() })
+app.listen(PORT, () => { console.log('UCS webhook running on port', PORT); testConnection(); startCron() })
+
+function fmtTime12(t){
+  const parts = t.split(':')
+  let h = parseInt(parts[0])
+  const m = parts[1] || '00'
+  const ap = h >= 12 ? 'PM' : 'AM'
+  h = h % 12 || 12
+  return h + (m !== '00' ? ':' + m : '') + ' ' + ap
+}
+
+async function sendDayBeforeReminders(){
+  try {
+    const tomorrow = new Date()
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10)
+    console.log('Checking sessions for:', tomorrowStr)
+
+    const { data: sessions } = await sb
+      .from('sessions')
+      .select('id, client_id, session_date, start_time, reminder_sent, clients(first_name, phone, id)')
+      .eq('session_date', tomorrowStr)
+      .eq('status', 'confirmed')
+      .eq('deleted', false)
+      .eq('reminder_sent', false)
+
+    if (!sessions || sessions.length === 0) {
+      console.log('No sessions to remind for', tomorrowStr)
+      return
+    }
+
+    console.log('Sending reminders for', sessions.length, 'session(s)')
+
+    for (const session of sessions) {
+      const cl = session.clients
+      if (!cl) continue
+
+      const timeStr = session.start_time ? ' at ' + fmtTime12(session.start_time) : ''
+      const msg = 'Hi ' + cl.first_name + '! Just a reminder that your filming session is tomorrow' + timeStr + '. Open your portal to confirm your attendance or text us if you need to reschedule.'
+
+      // Send SMS
+      if (cl.phone) {
+        let phone = cl.phone.replace(/[^\d+]/g, '')
+        if (!phone.startsWith('+')) phone = '+1' + phone
+        try {
+          await fetch('https://api.openphone.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Authorization': OPENPHONE_API_KEY, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: msg, from: 'PN7bGOiGL0', to: [phone] })
+          })
+          console.log('Reminder SMS sent to', cl.first_name)
+        } catch(e) { console.log('SMS error:', e.message) }
+      }
+
+      // Send push notification
+      await sendPushToClient(cl.id, 'Session reminder 📅', 'Your filming session is tomorrow' + timeStr + '. Tap to confirm your attendance.', 'booking')
+
+      // Portal message
+      await sb.from('messages').insert({
+        client_id: cl.id,
+        sender: 'admin',
+        content: msg,
+        read: false,
+        created_at: new Date().toISOString()
+      })
+
+      // Mark reminder sent
+      await sb.from('sessions').update({ reminder_sent: true }).eq('id', session.id)
+      console.log('Reminder sent for', cl.first_name, 'session on', tomorrowStr)
+    }
+  } catch(e) {
+    console.error('Reminder cron error:', e.message)
+  }
+}
+
+function startCron(){
+  setInterval(async function(){
+    const now = new Date()
+    const mountain = new Date(now.toLocaleString('en-US', { timeZone: 'America/Boise' }))
+    const hour = mountain.getHours()
+    const min = mountain.getMinutes()
+    if(hour === 9 && min < 5){
+      console.log('Running 9AM reminder job...')
+      await sendDayBeforeReminders()
+    }
+  }, 5 * 60 * 1000)
+  console.log('Cron started — checks every 5 min for 9AM reminders')
+}
