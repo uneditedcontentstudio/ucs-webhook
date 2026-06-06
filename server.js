@@ -65,6 +65,159 @@ app.get('/drive/image/:fileId', async (req, res) => {
   }
 })
 
+// ── VIDEO PROCESSING ──
+const ffmpeg = require('fluent-ffmpeg')
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg')
+const os = require('os')
+const path = require('path')
+const fs = require('fs')
+ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+
+// Font configs for caption styles
+const FONT_CONFIGS = {
+  clean: { fontsize: 36, fontcolor: 'white', borderw: 2, bordercolor: 'black', shadowx: 0, shadowy: 0 },
+  bold: { fontsize: 42, fontcolor: 'white', borderw: 4, bordercolor: 'black', shadowx: 3, shadowy: 3 },
+  subtitle: { fontsize: 32, fontcolor: 'white', borderw: 1, bordercolor: 'black', box: 1, boxcolor: 'black@0.5', boxborderw: 8 },
+  glow: { fontsize: 36, fontcolor: 'white', borderw: 0, shadowx: 0, shadowy: 0, shadowcolor: 'white@0.8' }
+}
+
+const POSITION_CONFIGS = {
+  top: { y: 60 },
+  center: { y: '(h-text_h)/2' },
+  bottom: { y: 'h-text_h-60' }
+}
+
+app.post('/video/process', async (req, res) => {
+  const { fileId, trimStart, trimEnd, removesilence, caption, fontStyle, position, speed } = req.body
+  if (!fileId) return res.json({ ok: false, error: 'No fileId' })
+
+  const tmpDir = os.tmpdir()
+  const inputPath = path.join(tmpDir, `ucs_in_${fileId}.mp4`)
+  const outputPath = path.join(tmpDir, `ucs_out_${fileId}_${Date.now()}.mp4`)
+
+  try {
+    console.log('Processing video:', fileId)
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+
+    // Download from Drive
+    const stream = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'stream' }
+    )
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(inputPath)
+      stream.data.pipe(writer)
+      writer.on('finish', resolve)
+      writer.on('error', reject)
+    })
+    console.log('Downloaded input file')
+
+    // Build FFmpeg command
+    let cmd = ffmpeg(inputPath)
+
+    // Trim
+    if (trimStart !== undefined && trimStart !== null) cmd = cmd.setStartTime(trimStart)
+    if (trimEnd !== undefined && trimEnd !== null) cmd = cmd.setDuration(trimEnd - (trimStart || 0))
+
+    // Speed
+    const spd = parseFloat(speed) || 1
+    const filters = []
+    if (spd !== 1) {
+      filters.push(`setpts=${(1/spd).toFixed(3)}*PTS`)
+      filters.push(`atempo=${Math.min(2, Math.max(0.5, spd))}`)
+    }
+
+    // Remove silence using silenceremove filter
+    if (removesilence) {
+      filters.push('silenceremove=stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB')
+    }
+
+    // Caption overlay
+    if (caption && caption.trim()) {
+      const font = FONT_CONFIGS[fontStyle] || FONT_CONFIGS.clean
+      const pos = POSITION_CONFIGS[position] || POSITION_CONFIGS.bottom
+      const escapedCaption = caption.replace(/'/g, "\\'").replace(/:/g, '\\:')
+      const drawtext = [
+        `text='${escapedCaption}'`,
+        `fontsize=${font.fontsize}`,
+        `fontcolor=${font.fontcolor}`,
+        `borderw=${font.borderw || 2}`,
+        `bordercolor=${font.bordercolor || 'black'}`,
+        font.box ? `box=1:boxcolor=${font.boxcolor}:boxborderw=${font.boxborderw}` : '',
+        `x=(w-text_w)/2`,
+        `y=${pos.y}`,
+        'fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+      ].filter(Boolean).join(':')
+      filters.push(`drawtext=${drawtext}`)
+    }
+
+    if (filters.length > 0) {
+      cmd = cmd.videoFilters(filters.filter(f => !f.startsWith('atempo') && !f.startsWith('silenceremove')))
+      const audioFilters = filters.filter(f => f.startsWith('atempo') || f.startsWith('silenceremove'))
+      if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
+    }
+
+    // Output settings - vertical 9:16
+    await new Promise((resolve, reject) => {
+      cmd
+        .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-c:a aac', '-movflags +faststart'])
+        .output(outputPath)
+        .on('start', cmd => console.log('FFmpeg started:', cmd))
+        .on('progress', p => console.log('Progress:', p.percent))
+        .on('end', resolve)
+        .on('error', reject)
+        .run()
+    })
+
+    console.log('FFmpeg done, uploading to Supabase')
+
+    // Upload to Supabase storage
+    const fileBuffer = fs.readFileSync(outputPath)
+    const fileName = `edited/${fileId}_${Date.now()}.mp4`
+    const { data: uploadData, error: uploadError } = await sb.storage
+      .from('ucs-uploads')
+      .upload(fileName, fileBuffer, { contentType: 'video/mp4', upsert: true })
+
+    if (uploadError) throw new Error('Upload failed: ' + uploadError.message)
+
+    // Get public URL with 24h expiry
+    const { data: urlData } = await sb.storage
+      .from('ucs-uploads')
+      .createSignedUrl(fileName, 86400)
+
+    // Cleanup temp files
+    try { fs.unlinkSync(inputPath); fs.unlinkSync(outputPath) } catch(e) {}
+
+    res.json({ ok: true, url: urlData.signedUrl, fileName })
+  } catch (e) {
+    console.error('Processing error:', e.message)
+    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath) } catch(e2) {}
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch(e2) {}
+    res.json({ ok: false, error: e.message })
+  }
+})
+
+// Get video metadata (duration etc) for trim UI
+app.get('/video/meta/:fileId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+    const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'mimeType,size,name,videoMediaMetadata' })
+    const videoMeta = meta.data.videoMediaMetadata || {}
+    res.json({
+      ok: true,
+      name: meta.data.name,
+      size: meta.data.size,
+      duration: videoMeta.durationMillis ? videoMeta.durationMillis / 1000 : null,
+      width: videoMeta.width,
+      height: videoMeta.height
+    })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
+  }
+})
+
 // Proxy Drive thumbnail (avoids auth issues in browser)
 app.get('/drive/thumb/:fileId', async (req, res) => {
   try {
