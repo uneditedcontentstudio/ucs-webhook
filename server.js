@@ -137,17 +137,22 @@ app.post('/video/process', async (req, res) => {
     if (caption && caption.trim()) {
       const font = FONT_CONFIGS[fontStyle] || FONT_CONFIGS.clean
       const pos = POSITION_CONFIGS[position] || POSITION_CONFIGS.bottom
-      const escapedCaption = caption.replace(/'/g, "\\'").replace(/:/g, '\\:')
+      const escapedCaption = caption.replace(/[\\\\':]/g, '\\$&').replace(/\n/g, ' ')
+      const fsizeMap = { small: 28, medium: 36, large: 44, xlarge: 54 }
+      const fsize = fsizeMap[req.body.fontSize] || font.fontsize
+      // Text alignment - x position
+      const alignX = req.body.textAlign === 'left' ? '20' : 
+                     req.body.textAlign === 'right' ? 'w-text_w-20' : 
+                     '(w-text_w)/2'
       const drawtext = [
         `text='${escapedCaption}'`,
-        `fontsize=${font.fontsize}`,
+        `fontsize=${fsize}`,
         `fontcolor=${font.fontcolor}`,
         `borderw=${font.borderw || 2}`,
         `bordercolor=${font.bordercolor || 'black'}`,
         font.box ? `box=1:boxcolor=${font.boxcolor}:boxborderw=${font.boxborderw}` : '',
-        `x=(w-text_w)/2`,
-        `y=${pos.y}`,
-        'fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+        `x=${alignX}`,
+        `y=${pos.y}`
       ].filter(Boolean).join(':')
       filters.push(`drawtext=${drawtext}`)
     }
