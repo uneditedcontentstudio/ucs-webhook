@@ -46,6 +46,25 @@ async function getDriveAuth() {
   return auth
 }
 
+// Serve full image file from Drive
+app.get('/drive/image/:fileId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+    const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'mimeType,name' })
+    const mimeType = meta.data.mimeType || 'image/jpeg'
+    res.setHeader('Content-Type', mimeType)
+    res.setHeader('Cache-Control', 'public, max-age=3600')
+    const stream = await drive.files.get(
+      { fileId: req.params.fileId, alt: 'media' },
+      { responseType: 'stream' }
+    )
+    stream.data.pipe(res)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Proxy Drive thumbnail (avoids auth issues in browser)
 app.get('/drive/thumb/:fileId', async (req, res) => {
   try {
@@ -157,9 +176,10 @@ app.get('/drive/files/:folderId', async (req, res) => {
       type: f.mimeType.startsWith('video/') ? 'video' : 'image',
       size: f.size,
       thumbnail: `/drive/thumb/${f.id}`,
+      imageUrl: `/drive/image/${f.id}`,
       streamUrl: `/drive/stream/${f.id}`,
       viewUrl: f.webViewLink,
-      downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`
+      downloadUrl: `/drive/stream/${f.id}`
     }))
 
     res.json({ ok: true, files })
