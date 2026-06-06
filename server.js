@@ -46,6 +46,68 @@ async function getDriveAuth() {
   return auth
 }
 
+// Proxy Drive thumbnail (avoids auth issues in browser)
+app.get('/drive/thumb/:fileId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+    const file = await drive.files.get({
+      fileId: req.params.fileId,
+      fields: 'thumbnailLink,mimeType'
+    })
+    if (!file.data.thumbnailLink) return res.status(404).send('No thumbnail')
+    // Fetch thumbnail and proxy it
+    const https = require('https')
+    https.get(file.data.thumbnailLink, (imgRes) => {
+      res.setHeader('Content-Type', imgRes.headers['content-type'] || 'image/jpeg')
+      res.setHeader('Cache-Control', 'public, max-age=3600')
+      imgRes.pipe(res)
+    }).on('error', () => res.status(500).send('Fetch failed'))
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Stream video file from Drive
+app.get('/drive/stream/:fileId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+    const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'mimeType,size,name' })
+    const mimeType = meta.data.mimeType || 'video/mp4'
+    const fileSize = parseInt(meta.data.size || '0')
+    const range = req.headers.range
+
+    if (range && fileSize > 0) {
+      const parts = range.replace(/bytes=/, '').split('-')
+      const start = parseInt(parts[0], 10)
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
+      const chunkSize = end - start + 1
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`)
+      res.setHeader('Accept-Ranges', 'bytes')
+      res.setHeader('Content-Length', chunkSize)
+      res.setHeader('Content-Type', mimeType)
+      res.status(206)
+      const stream = await drive.files.get(
+        { fileId: req.params.fileId, alt: 'media' },
+        { responseType: 'stream', headers: { Range: `bytes=${start}-${end}` } }
+      )
+      stream.data.pipe(res)
+    } else {
+      res.setHeader('Content-Type', mimeType)
+      res.setHeader('Accept-Ranges', 'bytes')
+      if (fileSize > 0) res.setHeader('Content-Length', fileSize)
+      const stream = await drive.files.get(
+        { fileId: req.params.fileId, alt: 'media' },
+        { responseType: 'stream' }
+      )
+      stream.data.pipe(res)
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // List month folders inside a client root folder
 app.get('/drive/folders/:folderId', async (req, res) => {
   try {
@@ -94,7 +156,8 @@ app.get('/drive/files/:folderId', async (req, res) => {
       name: f.name,
       type: f.mimeType.startsWith('video/') ? 'video' : 'image',
       size: f.size,
-      thumbnail: f.thumbnailLink,
+      thumbnail: `/drive/thumb/${f.id}`,
+      streamUrl: `/drive/stream/${f.id}`,
       viewUrl: f.webViewLink,
       downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`
     }))
