@@ -145,14 +145,32 @@ app.get('/drive/folders/:folderId', async (req, res) => {
       pageSize: 100
     })
 
-    const folders = (result.data.files || []).map(f => ({
-      id: f.id,
-      name: f.name,
-      url: 'https://drive.google.com/drive/folders/' + f.id,
-      month: parseMonthFromFolderName(f.name)
+    const folders = result.data.files || []
+
+    // For each folder get first image for cover thumbnail
+    const foldersWithCovers = await Promise.all(folders.map(async (f) => {
+      let coverThumb = null
+      try {
+        const firstImg = await drive.files.list({
+          q: `'${f.id}' in parents and mimeType contains 'image/' and trashed=false`,
+          fields: 'files(id)',
+          pageSize: 1,
+          orderBy: 'name'
+        })
+        if (firstImg.data.files && firstImg.data.files.length > 0) {
+          coverThumb = `/drive/thumb/${firstImg.data.files[0].id}`
+        }
+      } catch (e) {}
+      return {
+        id: f.id,
+        name: f.name,
+        url: 'https://drive.google.com/drive/folders/' + f.id,
+        month: parseMonthFromFolderName(f.name),
+        coverThumb
+      }
     }))
 
-    res.json({ ok: true, folders })
+    res.json({ ok: true, folders: foldersWithCovers })
   } catch (e) {
     res.json({ ok: false, error: e.message })
   }
