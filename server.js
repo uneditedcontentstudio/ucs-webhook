@@ -95,6 +95,7 @@ app.get('/drive/stream/:fileId', async (req, res) => {
     const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'mimeType,size,name' })
     const mimeType = meta.data.mimeType || 'video/mp4'
     const fileSize = parseInt(meta.data.size || '0')
+    const fileName = meta.data.name || 'video'
     const range = req.headers.range
 
     if (range && fileSize > 0) {
@@ -106,6 +107,7 @@ app.get('/drive/stream/:fileId', async (req, res) => {
       res.setHeader('Accept-Ranges', 'bytes')
       res.setHeader('Content-Length', chunkSize)
       res.setHeader('Content-Type', mimeType)
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
       res.status(206)
       const stream = await drive.files.get(
         { fileId: req.params.fileId, alt: 'media' },
@@ -115,6 +117,7 @@ app.get('/drive/stream/:fileId', async (req, res) => {
     } else {
       res.setHeader('Content-Type', mimeType)
       res.setHeader('Accept-Ranges', 'bytes')
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
       if (fileSize > 0) res.setHeader('Content-Length', fileSize)
       const stream = await drive.files.get(
         { fileId: req.params.fileId, alt: 'media' },
