@@ -151,14 +151,25 @@ app.get('/drive/folders/:folderId', async (req, res) => {
     const foldersWithCovers = await Promise.all(folders.map(async (f) => {
       let coverThumb = null
       try {
-        const firstImg = await drive.files.list({
-          q: `'${f.id}' in parents and mimeType contains 'image/' and trashed=false`,
+        // First look for a file named "cover" (cover.jpg, cover.png etc)
+        const coverFile = await drive.files.list({
+          q: `'${f.id}' in parents and name contains 'cover' and mimeType contains 'image/' and trashed=false`,
           fields: 'files(id)',
-          pageSize: 1,
-          orderBy: 'name'
+          pageSize: 1
         })
-        if (firstImg.data.files && firstImg.data.files.length > 0) {
-          coverThumb = `/drive/thumb/${firstImg.data.files[0].id}`
+        if (coverFile.data.files && coverFile.data.files.length > 0) {
+          coverThumb = `/drive/thumb/${coverFile.data.files[0].id}`
+        } else {
+          // Fall back to first image in folder
+          const firstImg = await drive.files.list({
+            q: `'${f.id}' in parents and mimeType contains 'image/' and trashed=false`,
+            fields: 'files(id)',
+            pageSize: 1,
+            orderBy: 'name'
+          })
+          if (firstImg.data.files && firstImg.data.files.length > 0) {
+            coverThumb = `/drive/thumb/${firstImg.data.files[0].id}`
+          }
         }
       } catch (e) {}
       return {
