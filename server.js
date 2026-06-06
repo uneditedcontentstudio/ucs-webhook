@@ -46,6 +46,82 @@ async function getDriveAuth() {
   return auth
 }
 
+// List month folders inside a client root folder
+app.get('/drive/folders/:folderId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    if (!auth) return res.json({ ok: false, error: 'No service account' })
+    const drive = google.drive({ version: 'v3', auth })
+    const { folderId } = req.params
+
+    const result = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: 'files(id,name,createdTime)',
+      orderBy: 'name desc',
+      pageSize: 100
+    })
+
+    const folders = (result.data.files || []).map(f => ({
+      id: f.id,
+      name: f.name,
+      url: 'https://drive.google.com/drive/folders/' + f.id,
+      month: parseMonthFromFolderName(f.name)
+    }))
+
+    res.json({ ok: true, folders })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
+  }
+})
+
+// List video/photo files inside a month folder
+app.get('/drive/files/:folderId', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    if (!auth) return res.json({ ok: false, error: 'No service account' })
+    const drive = google.drive({ version: 'v3', auth })
+    const { folderId } = req.params
+
+    const result = await drive.files.list({
+      q: `'${folderId}' in parents and trashed=false and (mimeType contains 'video/' or mimeType contains 'image/')`,
+      fields: 'files(id,name,mimeType,size,thumbnailLink,webViewLink,webContentLink)',
+      orderBy: 'name',
+      pageSize: 200
+    })
+
+    const files = (result.data.files || []).map(f => ({
+      id: f.id,
+      name: f.name,
+      type: f.mimeType.startsWith('video/') ? 'video' : 'image',
+      size: f.size,
+      thumbnail: f.thumbnailLink,
+      viewUrl: f.webViewLink,
+      downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`
+    }))
+
+    res.json({ ok: true, files })
+  } catch (e) {
+    res.json({ ok: false, error: e.message })
+  }
+})
+
+// Helper to parse month from folder name like "JUNE-25 (DELETE 09.15.25)"
+function parseMonthFromFolderName(name) {
+  const MONTHS = {
+    JAN:'January',FEB:'February',MAR:'March',APR:'April',MAY:'May',JUN:'June',
+    JUNE:'June',JULY:'July',JUL:'July',AUG:'August',SEP:'September',SEPT:'September',
+    OCT:'October',NOV:'November',DEC:'December'
+  }
+  const part = name.split(' ')[0] // e.g. "JUNE-25"
+  const pieces = part.split('-')
+  if (pieces.length < 2) return name
+  const monthStr = pieces[0].toUpperCase()
+  const yearStr = pieces[1]
+  const monthName = MONTHS[monthStr] || monthStr
+  const year = parseInt(yearStr) < 100 ? 2000 + parseInt(yearStr) : parseInt(yearStr)
+  return monthName + ' ' + year
+}
+
 // List all client folders from root Drive folder
 app.get('/drive/clients', async (req, res) => {
   try {
