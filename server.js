@@ -158,10 +158,19 @@ app.post('/video/process', async (req, res) => {
       if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
     }
 
-    // Output settings - vertical 9:16
+    // Output settings - map only video and audio, ignore data streams
     await new Promise((resolve, reject) => {
       cmd
-        .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-c:a aac', '-movflags +faststart'])
+        .outputOptions([
+          '-map 0:v:0',
+          '-map 0:a:0?',
+          '-c:v libx264',
+          '-preset fast',
+          '-crf 23',
+          '-c:a aac',
+          '-movflags +faststart',
+          '-avoid_negative_ts make_zero'
+        ])
         .output(outputPath)
         .on('start', cmd => console.log('FFmpeg started:', cmd))
         .on('progress', p => console.log('Progress:', p.percent))
