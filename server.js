@@ -35,6 +35,34 @@ if(VAPID_PUBLIC && VAPID_PRIVATE) {
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { realtime: { transport: require('ws') } })
 
+// Google Drive helper
+async function getDriveAuth() {
+  if (!GOOGLE_SERVICE_ACCOUNT) return null
+  const creds = JSON.parse(GOOGLE_SERVICE_ACCOUNT)
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes: ['https://www.googleapis.com/auth/drive.readonly']
+  })
+  return auth
+}
+
+// Drive test endpoint
+app.get('/drive-test', async (req, res) => {
+  try {
+    const auth = await getDriveAuth()
+    if (!auth) return res.json({ ok: false, error: 'No service account configured' })
+    const drive = google.drive({ version: 'v3', auth })
+    // Try to list root files
+    const result = await drive.files.list({
+      pageSize: 5,
+      fields: 'files(id, name, mimeType)'
+    })
+    res.json({ ok: true, files: result.data.files, count: result.data.files.length })
+  } catch (e) {
+    res.json({ ok: false, error: e.message, code: e.code })
+  }
+})
+
 // Google Calendar helper
 async function createCalendarEvent({ summary, description, date, startTime, endTime, clientEmail }) {
   if (!GOOGLE_SERVICE_ACCOUNT) { console.log('No Google service account configured'); return null }
