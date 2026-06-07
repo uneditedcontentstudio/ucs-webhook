@@ -88,8 +88,153 @@ const POSITION_CONFIGS = {
 }
 
 app.post('/video/process', async (req, res) => {
-  const { fileId, trimStart, trimEnd, removesilence, caption, fontStyle, position, speed } = req.body
+  const { fileId, trimStart, trimEnd, removesilence, caption, fontStyle, textAlign, fontSize, position, speed } = req.body
   if (!fileId) return res.json({ ok: false, error: 'No fileId' })
+
+  const tmpDir = os.tmpdir()
+  const inputPath = path.join(tmpDir, `ucs_in_${fileId}.mp4`)
+  const outputPath = path.join(tmpDir, `ucs_out_${fileId}_${Date.now()}.mp4`)
+
+  try {
+    console.log('Processing video:', fileId)
+    const auth = await getDriveAuth()
+    const drive = google.drive({ version: 'v3', auth })
+
+    // Check file size first — warn if over 500MB
+    const meta = await drive.files.get({ fileId, fields: 'size,name,mimeType' })
+    const fileSize = parseInt(meta.data.size || '0')
+    console.log(`File: ${meta.data.name}, Size: ${(fileSize/1024/1024).toFixed(1)}MB`)
+    if (fileSize > 800 * 1024 * 1024) {
+      return res.json({ ok: false, error: `File too large (${(fileSize/1024/1024).toFixed(0)}MB). Please use a clip under 800MB.` })
+    }
+
+    // Download from Drive
+    const stream = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'stream' }
+    )
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(inputPath)
+      stream.data.pipe(writer)
+      writer.on('finish', resolve)
+      writer.on('error', reject)
+    })
+    console.log('Downloaded input file')
+
+    // Build FFmpeg command
+    let cmd = ffmpeg(inputPath)
+
+    // Trim
+    if (trimStart !== undefined && trimStart !== null) cmd = cmd.setStartTime(trimStart)
+    if (trimEnd !== undefined && trimEnd !== null) cmd = cmd.setDuration(trimEnd - (trimStart || 0))
+
+    const spd = parseFloat(speed) || 1
+    const videoFilters = []
+    const audioFilters = []
+
+    // Speed
+    if (spd !== 1) {
+      videoFilters.push(`setpts=${(1/spd).toFixed(3)}*PTS`)
+      // atempo only supports 0.5-2.0, chain for values outside range
+      if (spd <= 2) {
+        audioFilters.push(`atempo=${spd}`)
+      } else {
+        audioFilters.push(`atempo=2.0`)
+        audioFilters.push(`atempo=${(spd/2).toFixed(2)}`)
+      }
+    }
+
+    // Remove silence
+    if (removesilence) {
+      audioFilters.push('silenceremove=stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB')
+    }
+
+    // Caption overlay
+    if (caption && caption.trim()) {
+      const font = FONT_CONFIGS[fontStyle] || FONT_CONFIGS.clean
+      const pos = POSITION_CONFIGS[position] || POSITION_CONFIGS.bottom
+      const fsizeMap = { small: 28, medium: 36, large: 44, xlarge: 54 }
+      const fsize = fsizeMap[fontSize] || font.fontsize
+      const alignX = textAlign === 'left' ? '20' :
+                     textAlign === 'right' ? 'w-text_w-20' :
+                     '(w-text_w)/2'
+      // Escape caption text for FFmpeg
+      const escapedCaption = caption
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\u2019")
+        .replace(/:/g, '\\:')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]')
+        .replace(/\n/g, ' ')
+        .slice(0, 100)
+
+      const parts = [
+        `text='${escapedCaption}'`,
+        `fontsize=${fsize}`,
+        `fontcolor=${font.fontcolor}`,
+        `borderw=${font.borderw || 2}`,
+        `bordercolor=${font.bordercolor || 'black'}`,
+        font.box ? `box=1:boxcolor=${font.boxcolor}:boxborderw=${font.boxborderw}` : null,
+        `x=${alignX}`,
+        `y=${pos.y}`
+      ].filter(Boolean).join(':')
+
+      videoFilters.push(`drawtext=${parts}`)
+    }
+
+    if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
+    if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
+
+    // Output
+    await new Promise((resolve, reject) => {
+      cmd
+        .outputOptions([
+          '-map 0:v:0',
+          '-map 0:a:0?',
+          '-c:v libx264',
+          '-preset fast',
+          '-crf 23',
+          '-c:a aac',
+          '-movflags +faststart',
+          '-avoid_negative_ts make_zero'
+        ])
+        .output(outputPath)
+        .on('start', c => console.log('FFmpeg started'))
+        .on('progress', p => console.log('Progress:', Math.round(p.percent || 0) + '%'))
+        .on('end', resolve)
+        .on('error', (err, stdout, stderr) => {
+          console.error('FFmpeg error:', err.message)
+          console.error('FFmpeg stderr:', stderr)
+          reject(err)
+        })
+        .run()
+    })
+
+    console.log('FFmpeg done, uploading to Supabase')
+
+    // Upload to Supabase storage
+    const fileBuffer = fs.readFileSync(outputPath)
+    const fileName = `edited/${fileId}_${Date.now()}.mp4`
+    const { data: uploadData, error: uploadError } = await sb.storage
+      .from('ucs-uploads')
+      .upload(fileName, fileBuffer, { contentType: 'video/mp4', upsert: true })
+
+    if (uploadError) throw new Error('Upload failed: ' + uploadError.message)
+
+    const { data: urlData } = await sb.storage
+      .from('ucs-uploads')
+      .createSignedUrl(fileName, 86400)
+
+    try { fs.unlinkSync(inputPath); fs.unlinkSync(outputPath) } catch(e) {}
+
+    res.json({ ok: true, url: urlData.signedUrl, fileName })
+  } catch (e) {
+    console.error('Processing error:', e.message)
+    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath) } catch(e2) {}
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch(e2) {}
+    res.json({ ok: false, error: e.message })
+  }
+})
 
   const tmpDir = os.tmpdir()
   const inputPath = path.join(tmpDir, `ucs_in_${fileId}.mp4`)
