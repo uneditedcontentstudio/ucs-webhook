@@ -195,22 +195,39 @@ app.post('/video/process', async (req, res) => {
       videoFilters.push(`drawtext=${parts}`)
     }
 
+    // Probe to find the best audio stream (skip unknown codecs like apac)
+    let audioStreamIndex = '0:a:0'
+    try {
+      await new Promise((resolve) => {
+        require('fluent-ffmpeg').ffprobe(inputPath, (err, metadata) => {
+          if (!err && metadata && metadata.streams) {
+            const audioStreams = metadata.streams.filter(s => s.codec_type === 'audio')
+            const aacStream = audioStreams.find(s => s.codec_name === 'aac')
+            if (aacStream) {
+              audioStreamIndex = `0:${aacStream.index}`
+              console.log(`Using audio stream index: ${aacStream.index} (${aacStream.codec_name})`)
+            }
+          }
+          resolve()
+        })
+      })
+    } catch(e) { console.log('Probe failed, using default audio stream') }
+
     if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
     if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
 
-    // Output — handle HEVC/HDR iPhone footage + ignore extra streams
+    // Output
     await new Promise((resolve, reject) => {
       cmd
         .outputOptions([
           '-map 0:v:0',
-          '-map 0:a:1?',  // use AAC stream (stream 1), not the Apple Lossless stream 2
+          `-map ${audioStreamIndex}?`,
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
-          '-pix_fmt yuv420p',  // convert HDR 10-bit to standard 8-bit for compatibility
-          '-vf scale=iw:ih',   // ensure proper scaling
+          '-pix_fmt yuv420p',
           '-c:a aac',
-          '-ac 2',             // stereo output
+          '-ac 2',
           '-movflags +faststart',
           '-avoid_negative_ts make_zero'
         ])
