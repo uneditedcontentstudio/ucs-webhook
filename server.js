@@ -167,18 +167,19 @@ app.post('/video/process', async (req, res) => {
         .replace(/\n/g, ' ')
         .slice(0, 100)
 
-      // Find available font on Railway
+      // Use bundled font first, then fall back to system fonts
       const possibleFonts = [
+        path.join(__dirname, 'fonts', 'DejaVuSans-Bold.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
-        '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf',
         '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
       ]
       let fontFile = null
       for (const f of possibleFonts) {
         if (fs.existsSync(f)) { fontFile = f; break }
       }
+      console.log('Font file:', fontFile || 'not found')
 
       const parts = [
         `text='${escapedCaption}'`,
