@@ -158,15 +158,27 @@ app.post('/video/process', async (req, res) => {
       const alignX = textAlign === 'left' ? '20' :
                      textAlign === 'right' ? 'w-text_w-20' :
                      '(w-text_w)/2'
-      // Escape caption text for FFmpeg
       const escapedCaption = caption
         .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\u2019")
+        .replace(/'/g, '\u2019')
         .replace(/:/g, '\\:')
         .replace(/\[/g, '\\[')
         .replace(/\]/g, '\\]')
         .replace(/\n/g, ' ')
         .slice(0, 100)
+
+      // Find available font on Railway
+      const possibleFonts = [
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf',
+        '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
+      ]
+      let fontFile = null
+      for (const f of possibleFonts) {
+        if (fs.existsSync(f)) { fontFile = f; break }
+      }
 
       const parts = [
         `text='${escapedCaption}'`,
@@ -174,6 +186,7 @@ app.post('/video/process', async (req, res) => {
         `fontcolor=${font.fontcolor}`,
         `borderw=${font.borderw || 2}`,
         `bordercolor=${font.bordercolor || 'black'}`,
+        fontFile ? `fontfile=${fontFile}` : null,
         font.box ? `box=1:boxcolor=${font.boxcolor}:boxborderw=${font.boxborderw}` : null,
         `x=${alignX}`,
         `y=${pos.y}`
@@ -185,16 +198,19 @@ app.post('/video/process', async (req, res) => {
     if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
     if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
 
-    // Output
+    // Output — handle HEVC/HDR iPhone footage + ignore extra streams
     await new Promise((resolve, reject) => {
       cmd
         .outputOptions([
           '-map 0:v:0',
-          '-map 0:a:0?',
+          '-map 0:a:1?',  // use AAC stream (stream 1), not the Apple Lossless stream 2
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
+          '-pix_fmt yuv420p',  // convert HDR 10-bit to standard 8-bit for compatibility
+          '-vf scale=iw:ih',   // ensure proper scaling
           '-c:a aac',
+          '-ac 2',             // stereo output
           '-movflags +faststart',
           '-avoid_negative_ts make_zero'
         ])
