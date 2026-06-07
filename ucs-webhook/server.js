@@ -214,6 +214,9 @@ app.post('/video/process', async (req, res) => {
       })
     } catch(e) { console.log('Probe failed, using default audio stream') }
 
+    // Always add scale to 1080p for Instagram (combine with other video filters)
+    videoFilters.unshift('scale=1080:-2')
+
     if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
     if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
 
@@ -225,9 +228,8 @@ app.post('/video/process', async (req, res) => {
           `-map ${audioStreamIndex}?`,
           '-c:v libx264',
           '-preset fast',
-          '-crf 28',          // higher CRF = smaller file (23 was too large)
+          '-crf 28',
           '-pix_fmt yuv420p',
-          '-vf scale=1080:-2', // downscale 4K to 1080p for Instagram
           '-c:a aac',
           '-b:a 128k',
           '-ac 2',
