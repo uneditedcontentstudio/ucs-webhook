@@ -224,9 +224,11 @@ app.post('/video/process', async (req, res) => {
           `-map ${audioStreamIndex}?`,
           '-c:v libx264',
           '-preset fast',
-          '-crf 23',
+          '-crf 28',          // higher CRF = smaller file (23 was too large)
           '-pix_fmt yuv420p',
+          '-vf scale=1080:-2', // downscale 4K to 1080p for Instagram
           '-c:a aac',
+          '-b:a 128k',
           '-ac 2',
           '-movflags +faststart',
           '-avoid_negative_ts make_zero'
@@ -247,6 +249,8 @@ app.post('/video/process', async (req, res) => {
 
     // Upload to Supabase storage
     const fileBuffer = fs.readFileSync(outputPath)
+    const fileSizeMB = (fileBuffer.length / 1024 / 1024).toFixed(1)
+    console.log(`Output file size: ${fileSizeMB}MB`)
     const fileName = `edited/${fileId}_${Date.now()}.mp4`
     const { data: uploadData, error: uploadError } = await sb.storage
       .from('ucs-uploads')
