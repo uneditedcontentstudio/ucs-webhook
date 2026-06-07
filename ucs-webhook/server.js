@@ -214,10 +214,11 @@ app.post('/video/process', async (req, res) => {
       })
     } catch(e) { console.log('Probe failed, using default audio stream') }
 
-    // Scale to 1080p — handle both landscape and portrait
-    // For portrait (iPhone vertical), scale height to 1920, width auto
-    // Use -2 to ensure even dimensions for H.264
-    videoFilters.unshift('scale=if(gt(iw\\,ih)\\,1080\\,-2):if(gt(iw\\,ih)\\,-2\\,1920)')
+    // Scale: keep original size but ensure even dimensions for H.264
+    videoFilters.unshift('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+    
+    console.log('Video filters:', JSON.stringify(videoFilters))
+    console.log('Audio filters:', JSON.stringify(audioFilters))
 
     if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
     if (audioFilters.length > 0) cmd = cmd.audioFilters(audioFilters)
