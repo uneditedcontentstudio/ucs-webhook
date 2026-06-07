@@ -96,7 +96,7 @@ app.post('/video/process', async (req, res) => {
   const outputPath = path.join(tmpDir, `ucs_out_${fileId}_${Date.now()}.mp4`)
 
   try {
-    console.log('Processing video:', fileId)
+    console.log('Process request:', JSON.stringify({ fileId, trimStart, trimEnd, removesilence, caption: caption?.slice(0,30), fontStyle, textAlign, fontSize, position, speed }))
     const auth = await getDriveAuth()
     const drive = google.drive({ version: 'v3', auth })
 
